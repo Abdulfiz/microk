@@ -19,5 +19,6 @@ typedef void (*task_fn)(void);
 int  task_create(task_fn fn, uint32_t *stack, uint32_t words, const char *name);
 void kernel_start(void);   /* start the first task; never returns */
 void task_yield(void);     /* give up the CPU to the next task */
+void task_delay(uint32_t ticks);   /* sleep for this many ticks (1 tick = 1 ms) */
 
 #endif

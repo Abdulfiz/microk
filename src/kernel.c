@@ -9,18 +9,24 @@
 #define ICSR_PENDSVSET (1u << 28)
 
 /* ---------- task control block ---------- */
+typedef enum { TASK_READY = 0, TASK_DELAYED } task_state_t;
+
 typedef struct tcb {
     uint32_t  *sp;          /* saved stack pointer. MUST be the first field:
                                the assembly below reads it at offset 0.   */
     const char *name;
-    int        used;
+    task_state_t state;
+    uint32_t   wake_tick;   /* when a DELAYED task becomes READY again */
 } tcb_t;
 
-static tcb_t tasks[MAX_TASKS];
-static int   task_count;
-tcb_t       *current_task;   /* not static: the assembly refers to this name */
+/* tasks[0] is the idle task: it runs only when nothing else can. */
+static tcb_t    tasks[MAX_TASKS + 1];
+static int      task_count;          /* includes the idle task once created */
+static uint32_t idle_stack[48];
+tcb_t          *current_task;        /* not static: the assembly refers to this name */
 
 static volatile uint32_t tick_count;
+static volatile int      kernel_running;   /* set once kernel_start() runs */
 
 /* ---------- time ---------- */
 void systick_init(uint32_t reload)
@@ -32,7 +38,12 @@ void systick_init(uint32_t reload)
 
 uint32_t ticks_get(void) { return tick_count; }
 
-void SysTick_Handler(void) { tick_count++; }
+void SysTick_Handler(void)
+{
+    tick_count++;
+    if (kernel_running)          /* before kernel_start() there is nothing to switch */
+        SCB_ICSR = ICSR_PENDSVSET;   /* every tick, ask the scheduler to run */
+}
 
 /* ---------- task creation ---------- */
 static void task_exit(void)   /* a task that returns from its function lands here */
@@ -40,9 +51,23 @@ static void task_exit(void)   /* a task that returns from its function lands her
     for (;;) task_yield();
 }
 
+static void idle_task(void)
+{
+    for (;;) __asm volatile("wfi");   /* sleep until the next interrupt */
+}
+
+static int add_task(task_fn fn, uint32_t *stack, uint32_t words, const char *name);
+
 int task_create(task_fn fn, uint32_t *stack, uint32_t words, const char *name)
 {
-    if (task_count >= MAX_TASKS) return -1;
+    if (task_count == 0)   /* first call: create the idle task in slot 0 */
+        add_task(idle_task, idle_stack, 48, "idle");
+    if (task_count >= MAX_TASKS + 1) return -1;
+    return add_task(fn, stack, words, name);
+}
+
+static int add_task(task_fn fn, uint32_t *stack, uint32_t words, const char *name)
+{
 
     /* top of stack, aligned to 8 bytes (an ARM requirement) */
     uint32_t *sp = (uint32_t *)(((uintptr_t)(stack + words)) & ~7u);
@@ -63,7 +88,8 @@ int task_create(task_fn fn, uint32_t *stack, uint32_t words, const char *name)
     tcb_t *t = &tasks[task_count++];
     t->sp   = sp;
     t->name = name;
-    t->used = 1;
+    t->state = TASK_READY;
+    t->wake_tick = 0;
     return 0;
 }
 
@@ -72,11 +98,37 @@ int task_create(task_fn fn, uint32_t *stack, uint32_t words, const char *name)
  * (simple round-robin) and stores it in current_task. */
 void scheduler_pick(void)
 {
-    int idx = (int)(current_task - tasks);
-    current_task = &tasks[(idx + 1) % task_count];
+    /* 1. wake any delayed task whose time has come
+     *    (the subtraction form stays correct when the tick counter wraps) */
+    for (int i = 1; i < task_count; i++)
+        if (tasks[i].state == TASK_DELAYED &&
+            (int32_t)(tick_count - tasks[i].wake_tick) >= 0)
+            tasks[i].state = TASK_READY;
+
+    /* 2. round-robin: look for the next READY task after the current one.
+     *    User tasks live in slots 1..task_count-1 (slot 0 is idle). */
+    int idx    = (int)(current_task - tasks);
+    int n_user = task_count - 1;
+    for (int n = 1; n <= n_user; n++) {
+        int cand = (idx == 0) ? n : 1 + ((idx - 1 + n) % n_user);
+        if (tasks[cand].state == TASK_READY) {
+            current_task = &tasks[cand];
+            return;
+        }
+    }
+    current_task = &tasks[0];   /* nothing ready: run idle */
 }
 
 /* ---------- context switching (assembly) ---------- */
+void task_delay(uint32_t ticks)
+{
+    __asm volatile("cpsid i");
+    current_task->wake_tick = tick_count + ticks;
+    current_task->state = TASK_DELAYED;
+    __asm volatile("cpsie i");
+    task_yield();
+}
+
 void task_yield(void)
 {
     SCB_ICSR = ICSR_PENDSVSET;          /* ask for a context switch */
@@ -122,7 +174,8 @@ __attribute__((naked)) void SVC_Handler(void)
 void kernel_start(void)
 {
     SCB_SHPR3 |= (0xFFu << 16) | (0xFFu << 24);   /* PendSV + SysTick = lowest priority */
-    current_task = &tasks[0];
+    current_task = &tasks[task_count > 1 ? 1 : 0];   /* start with the first user task */
+    kernel_running = 1;
     __asm volatile("cpsie i\n svc 0\n");          /* launch the first task */
     for (;;) { }
 }
