@@ -6,3 +6,4 @@ tested in QEMU (no hardware needed).
 ## Status
 - [x] M0 - boots and prints over UART
 - [x] M1 - SysTick timer gives a 1 ms tick
+- [x] M2 - context switching (PendSV) and cooperative task_yield()
