@@ -5,7 +5,7 @@ LDFLAGS = -T arch/linker.ld -nostartfiles -nostdlib -Wl,--gc-sections
 QEMU    = qemu-system-arm -machine lm3s6965evb -cpu cortex-m3 -nographic \
           -semihosting-config enable=on,target=native
 
-SRCS = arch/startup.c drivers/uart.c
+SRCS = arch/startup.c drivers/uart.c src/kernel.c
 
 all: build/microk.elf
 
