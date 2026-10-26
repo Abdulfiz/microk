@@ -1,26 +1,34 @@
 #include "../drivers/uart.h"
 #include "kernel.h"
 
-static uint32_t stack_a[96], stack_b[96];
+static uint32_t stack_p[128], stack_c[128];
+static semaphore_t items;
 
-/* These tasks never yield: the timer interrupt preempts them. */
-static void task_a(void)
+/* Producer makes an item every 200 ms; consumer sleeps until one exists. */
+static void producer(void)
 {
-    uart_puts("A started\n");
-    for (;;) { uart_puts("A tick "); uart_put_dec(ticks_get()); uart_puts("\n"); task_delay(500); }
+    for (uint32_t n = 1; ; n++) {
+        task_delay(200);
+        uart_puts("produced item "); uart_put_dec(n); uart_puts("\n");
+        sem_give(&items);
+    }
 }
 
-static void task_b(void)
+static void consumer(void)
 {
-    uart_puts("B started\n");
-    for (;;) { uart_puts("  B tick "); uart_put_dec(ticks_get()); uart_puts("\n"); task_delay(300); }
+    for (uint32_t n = 1; ; n++) {
+        sem_take(&items);                       /* blocks - uses no CPU while waiting */
+        uart_puts("  consumed item "); uart_put_dec(n); uart_puts(" at tick ");
+        uart_put_dec(ticks_get()); uart_puts("\n");
+    }
 }
 
 int main(void)
 {
-    uart_puts("microk: M3 preemptive scheduler demo\n");
-    task_create(task_a, stack_a, 96, "A");
-    task_create(task_b, stack_b, 96, "B");
+    uart_puts("microk: M4 semaphore demo\n");
+    sem_init(&items, 0);
+    task_create(producer, stack_p, 128, "producer");
+    task_create(consumer, stack_c, 128, "consumer");
     systick_init(SYSTICK_1MS);
     kernel_start();
 }

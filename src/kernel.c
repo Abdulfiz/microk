@@ -9,7 +9,7 @@
 #define ICSR_PENDSVSET (1u << 28)
 
 /* ---------- task control block ---------- */
-typedef enum { TASK_READY = 0, TASK_DELAYED } task_state_t;
+typedef enum { TASK_READY = 0, TASK_DELAYED, TASK_BLOCKED } task_state_t;
 
 typedef struct tcb {
     uint32_t  *sp;          /* saved stack pointer. MUST be the first field:
@@ -17,6 +17,7 @@ typedef struct tcb {
     const char *name;
     task_state_t state;
     uint32_t   wake_tick;   /* when a DELAYED task becomes READY again */
+    void      *wait_obj;    /* what a BLOCKED task is waiting for */
 } tcb_t;
 
 /* tasks[0] is the idle task: it runs only when nothing else can. */
@@ -90,6 +91,7 @@ static int add_task(task_fn fn, uint32_t *stack, uint32_t words, const char *nam
     t->name = name;
     t->state = TASK_READY;
     t->wake_tick = 0;
+    t->wait_obj = 0;
     return 0;
 }
 
@@ -178,4 +180,72 @@ void kernel_start(void)
     kernel_running = 1;
     __asm volatile("cpsie i\n svc 0\n");          /* launch the first task */
     for (;;) { }
+}
+
+/* ---------- synchronisation ---------- */
+/* Interrupts are switched off around every check-and-block so a tick cannot
+ * sneak in between "is it free?" and "mark me as waiting". */
+
+static void wake_one(void *obj)   /* call with interrupts disabled */
+{
+    for (int i = 1; i < task_count; i++)
+        if (tasks[i].state == TASK_BLOCKED && tasks[i].wait_obj == obj) {
+            tasks[i].state = TASK_READY;
+            tasks[i].wait_obj = 0;
+            return;
+        }
+}
+
+void sem_init(semaphore_t *s, int initial) { s->count = initial; }
+
+void sem_take(semaphore_t *s)
+{
+    for (;;) {
+        __asm volatile("cpsid i");
+        if (s->count > 0) {
+            s->count--;
+            __asm volatile("cpsie i");
+            return;
+        }
+        current_task->wait_obj = s;
+        current_task->state = TASK_BLOCKED;
+        __asm volatile("cpsie i");
+        task_yield();            /* we are woken by sem_give, then re-check */
+    }
+}
+
+void sem_give(semaphore_t *s)
+{
+    __asm volatile("cpsid i");
+    s->count++;
+    wake_one(s);
+    __asm volatile("cpsie i");
+}
+
+void mutex_init(mutex_t *m) { m->owner = 0; }
+
+void mutex_lock(mutex_t *m)
+{
+    for (;;) {
+        __asm volatile("cpsid i");
+        if (m->owner == 0) {
+            m->owner = current_task;
+            __asm volatile("cpsie i");
+            return;
+        }
+        current_task->wait_obj = m;
+        current_task->state = TASK_BLOCKED;
+        __asm volatile("cpsie i");
+        task_yield();
+    }
+}
+
+void mutex_unlock(mutex_t *m)
+{
+    __asm volatile("cpsid i");
+    if (m->owner == current_task) {
+        m->owner = 0;
+        wake_one(m);
+    }
+    __asm volatile("cpsie i");
 }

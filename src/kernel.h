@@ -21,4 +21,16 @@ void kernel_start(void);   /* start the first task; never returns */
 void task_yield(void);     /* give up the CPU to the next task */
 void task_delay(uint32_t ticks);   /* sleep for this many ticks (1 tick = 1 ms) */
 
+
+/* ---- synchronisation ---- */
+typedef struct { volatile int count; } semaphore_t;
+void sem_init(semaphore_t *s, int initial);
+void sem_take(semaphore_t *s);   /* wait until count > 0, then decrement */
+void sem_give(semaphore_t *s);   /* increment, wake one waiting task */
+
+typedef struct { void *volatile owner; } mutex_t;
+void mutex_init(mutex_t *m);
+void mutex_lock(mutex_t *m);     /* blocks while another task holds it */
+void mutex_unlock(mutex_t *m);   /* only the owner can unlock */
+
 #endif

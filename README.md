@@ -8,3 +8,4 @@ tested in QEMU (no hardware needed).
 - [x] M1 - SysTick timer gives a 1 ms tick
 - [x] M2 - context switching (PendSV) and cooperative task_yield()
 - [x] M3 - preemptive round-robin scheduler, task_delay(), idle task
+- [x] M4 - semaphores and mutexes that block without wasting CPU
